@@ -57,9 +57,7 @@ const Register = () => {
     setIsLoading(true);
     
     try {
-      const { error } = await signUp(formData.email, formData.password, {
-        username: formData.username
-      });
+      const { error } = await signUp(formData.email, formData.password, formData.username);
       
       if (error) {
         setErrors({ general: error.message || '注册失败，请稍后重试' });

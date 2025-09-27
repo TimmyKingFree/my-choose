@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Camera, Upload, ArrowLeft, AlertCircle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { analyzeFoodWithBaiduAI } from '../services/baiduAI';
+import { analyzeFoodWithQwenAI } from '../services/qwenAI';
 
 export default function PhotoAnalysis() {
   const navigate = useNavigate();
@@ -33,7 +33,7 @@ export default function PhotoAnalysis() {
     setError(null);
     
     try {
-      const result = await analyzeFoodWithBaiduAI(selectedFile);
+      const result = await analyzeFoodWithQwenAI(selectedFile);
       
       setAnalysisResult({
         foodName: result.foodName,

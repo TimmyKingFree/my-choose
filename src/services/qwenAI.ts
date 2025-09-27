@@ -1,89 +1,54 @@
 import axios from 'axios';
 
-// 百度AI菜品识别API配置
-const BAIDU_API_KEY = import.meta.env.VITE_BAIDU_API_KEY;
-const BAIDU_SECRET_KEY = import.meta.env.VITE_BAIDU_SECRET_KEY;
-const BAIDU_TOKEN_URL = 'https://aip.baidubce.com/oauth/2.0/token';
-const BAIDU_DISH_DETECT_URL = 'https://aip.baidubce.com/rest/2.0/image-classify/v2/dish';
+// 阿里云通义千问API配置（OpenAI兼容格式）
+const QWEN_API_KEY = import.meta.env.VITE_QWEN_API_KEY;
+const QWEN_API_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
 
 // 检查API配置是否有效
-function isValidBaiduConfig(): boolean {
-  return BAIDU_API_KEY && 
-         BAIDU_SECRET_KEY && 
-         BAIDU_API_KEY !== 'your_baidu_api_key_here' && 
-         BAIDU_SECRET_KEY !== 'your_baidu_secret_key_here' &&
-         !BAIDU_API_KEY.includes('your_') &&
-         !BAIDU_SECRET_KEY.includes('your_');
-}
-
-// 百度AI返回的菜品信息接口
-interface BaiduDishResult {
-  name: string;
-  probability: number;
-  calorie?: number;
-  has_calorie?: number;
-}
-
-interface BaiduAPIResponse {
-  result_num: number;
-  result: BaiduDishResult[];
-}
-
-// 获取百度AI访问令牌
-let accessToken: string | null = null;
-let tokenExpireTime: number = 0;
-
-async function getAccessToken(): Promise<string> {
-  // 检查配置是否有效
-  if (!isValidBaiduConfig()) {
-    throw new Error('百度AI配置无效，请检查API Key和Secret Key配置');
+function isValidQwenConfig(): boolean {
+  if (!QWEN_API_KEY) {
+    console.warn('通义千问API Key未配置');
+    return false;
   }
-
-  // 如果token还未过期，直接返回
-  if (accessToken && Date.now() < tokenExpireTime) {
-    return accessToken;
+  
+  if (QWEN_API_KEY === 'your_qwen_api_key_here' || QWEN_API_KEY.includes('your_')) {
+    console.warn('通义千问API Key为占位符，请配置真实的API Key');
+    return false;
   }
-
-  try {
-    const response = await axios.post(BAIDU_TOKEN_URL, null, {
-      params: {
-        grant_type: 'client_credentials',
-        client_id: BAIDU_API_KEY,
-        client_secret: BAIDU_SECRET_KEY,
-      },
-    });
-
-    if (!response.data.access_token) {
-      throw new Error('获取访问令牌失败：响应中没有access_token');
-    }
-
-    accessToken = response.data.access_token;
-    // token有效期为30天，这里设置为29天后过期
-    tokenExpireTime = Date.now() + 29 * 24 * 60 * 60 * 1000;
-    
-    return accessToken;
-  } catch (error) {
-    console.error('获取百度AI访问令牌失败:', error);
-    if (axios.isAxiosError(error)) {
-      if (error.response?.status === 401) {
-        throw new Error('百度AI认证失败，请检查API Key和Secret Key是否正确');
-      } else if (error.response?.status === 403) {
-        throw new Error('百度AI访问被拒绝，请检查账户权限');
-      } else {
-        throw new Error(`百度AI服务错误：${error.response?.status || '网络错误'}`);
-      }
-    }
-    throw new Error('无法获取百度AI访问令牌，请检查网络连接');
+  
+  if (QWEN_API_KEY.length < 20) {
+    console.warn('通义千问API Key格式可能不正确，长度过短');
+    return false;
   }
+  
+  return true;
 }
 
-// 将图片文件转换为Base64
+// 通义千问API返回的响应接口（OpenAI兼容格式）
+interface QwenAPIResponse {
+  choices: Array<{
+    message: {
+      content: string;
+    };
+  }>;
+  usage: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
+  id: string;
+  object: string;
+  created: number;
+  model: string;
+}
+
+// 将图片文件转换为Base64（去掉data:image前缀）
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
       const result = reader.result as string;
-      // 移除data:image/xxx;base64,前缀
+      // 去掉data:image/xxx;base64,前缀，只保留base64编码
       const base64 = result.split(',')[1];
       resolve(base64);
     };
@@ -120,62 +85,146 @@ function generateMockResult(imageFile: File) {
   };
 }
 
-// 调用百度AI菜品识别API
-export async function analyzeFoodWithBaiduAI(imageFile: File) {
+// 解析通义千问的响应内容
+function parseQwenResponse(content: string) {
+  try {
+    // 尝试解析JSON格式的响应
+    const parsed = JSON.parse(content);
+    return parsed;
+  } catch {
+    // 如果不是JSON，尝试从文本中提取信息
+    const lines = content.split('\n');
+    const result = {
+      foodName: '未知菜品',
+      confidence: 75,
+      calories: 200,
+      ingredients: [] as string[]
+    };
+    
+    for (const line of lines) {
+      if (line.includes('菜品') || line.includes('食物')) {
+        const match = line.match(/[：:](.*?)([，,。]|$)/);
+        if (match) result.foodName = match[1].trim();
+      }
+      if (line.includes('卡路里') || line.includes('热量')) {
+        const match = line.match(/(\d+)/);
+        if (match) result.calories = parseInt(match[1]);
+      }
+      if (line.includes('食材') || line.includes('配料')) {
+        const match = line.match(/[：:](.*?)([，,。]|$)/);
+        if (match) {
+          result.ingredients = match[1].split(/[，,、]/).map(s => s.trim()).filter(s => s);
+        }
+      }
+    }
+    
+    return result;
+  }
+}
+
+// 调用通义千问AI进行菜品识别
+export async function analyzeFoodWithQwenAI(imageFile: File) {
   try {
     // 检查API配置是否有效
-    if (!isValidBaiduConfig()) {
-      console.warn('百度AI配置无效，使用模拟数据');
+    if (!isValidQwenConfig()) {
+      console.warn('通义千问API配置无效，使用模拟数据');
       return generateMockResult(imageFile);
     }
 
-    // 获取访问令牌
-    const token = await getAccessToken();
-    
     // 将图片转换为Base64
     const imageBase64 = await fileToBase64(imageFile);
     
-    // 调用百度AI菜品识别API
-    const response = await axios.post(
-      `${BAIDU_DISH_DETECT_URL}?access_token=${token}`,
-      `image=${encodeURIComponent(imageBase64)}&top_num=5`,
-      {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-      }
-    );
+    // 构建请求数据（OpenAI兼容格式）
+    const requestData = {
+      model: 'qwen-vl-max-latest',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'image_url',
+              image_url: {
+                url: `data:image/jpeg;base64,${imageBase64}`
+              }
+            },
+            {
+              type: 'text',
+              text: '请识别这张图片中的菜品，并提供以下信息：\n1. 菜品名称\n2. 估算的卡路里含量\n3. 主要食材\n4. 营养成分分析\n5. 健康建议\n请以JSON格式返回结果，包含foodName、calories、ingredients、nutrition、suggestions字段。'
+            }
+          ]
+        }
+      ],
+      max_tokens: 2000,
+      temperature: 0.7
+    };
 
-    const data: BaiduAPIResponse = response.data;
+    // 调用通义千问API（使用同步调用方式）
+    const response = await axios.post(QWEN_API_URL, requestData, {
+      headers: {
+        'Authorization': `Bearer ${QWEN_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 30000
+    });
+
+    const data: QwenAPIResponse = response.data;
     
-    if (!data.result || data.result.length === 0) {
-      throw new Error('未识别到菜品信息');
+    if (!data.choices?.[0]?.message?.content) {
+      throw new Error('未获取到有效的识别结果');
     }
 
-    // 转换为应用所需的格式
-    const mainDish = data.result[0];
-    const confidence = Math.round(mainDish.probability * 100);
+    // 解析AI返回的内容
+    const aiResult = parseQwenResponse(data.choices[0].message.content);
     
-    // 估算营养信息（基于识别结果和常见菜品数据）
-    const estimatedCalories = mainDish.calorie || estimateCalories(mainDish.name);
-    const nutritionInfo = estimateNutrition(mainDish.name, estimatedCalories);
+    // 转换为应用所需的格式
+    const foodName = aiResult.foodName || '未知菜品';
+    const calories = aiResult.calories || estimateCalories(foodName);
+    const nutritionInfo = estimateNutrition(foodName, calories);
+    const ingredients = aiResult.ingredients?.length > 0 ? aiResult.ingredients : extractIngredients(foodName);
     
     return {
-      foodName: mainDish.name,
-      confidence: confidence,
-      calories: estimatedCalories,
+      foodName: foodName,
+      confidence: aiResult.confidence || 80,
+      calories: calories,
       nutrition: nutritionInfo,
-      ingredients: extractIngredients(mainDish.name),
+      ingredients: ingredients,
       healthScore: calculateHealthScore(nutritionInfo),
-      suggestions: generateSuggestions(mainDish.name, nutritionInfo),
-      alternatives: data.result.slice(1, 4).map(dish => ({
-        name: dish.name,
-        probability: Math.round(dish.probability * 100)
-      }))
+      suggestions: aiResult.suggestions || generateSuggestions(foodName, nutritionInfo),
+      alternatives: [
+        { name: foodName, probability: aiResult.confidence || 80 },
+        { name: '相似菜品1', probability: 60 },
+        { name: '相似菜品2', probability: 45 }
+      ]
     };
   } catch (error) {
-    console.error('百度AI菜品识别失败:', error);
-    console.warn('百度AI服务不可用，使用模拟数据');
+    console.error('通义千问AI菜品识别失败:', error);
+    
+    // 提供更详细的错误信息
+    if (axios.isAxiosError(error)) {
+      if (error.response) {
+        console.error('API响应错误:', {
+          status: error.response.status,
+          statusText: error.response.statusText,
+          data: error.response.data
+        });
+        
+        if (error.response.status === 401) {
+          console.error('认证失败：请检查VITE_QWEN_API_KEY是否正确配置');
+        } else if (error.response.status === 400) {
+          console.error('请求参数错误：请检查请求格式是否正确');
+        } else if (error.response.status === 429) {
+          console.error('API调用频率限制：请稍后重试');
+        }
+      } else if (error.request) {
+        console.error('网络请求失败：无法连接到通义千问API服务器');
+      } else {
+        console.error('请求配置错误:', error.message);
+      }
+    } else {
+      console.error('未知错误:', error);
+    }
+    
+    console.warn('通义千问AI服务不可用，使用模拟数据');
     return generateMockResult(imageFile);
   }
 }
