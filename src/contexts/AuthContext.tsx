@@ -137,114 +137,240 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return { error: null }
       }
 
+      // Supabase模式：真实注册
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
         options: {
           data: {
             name,
+            username: name
           },
         },
       })
       
-      // 如果注册成功，保存登录状态
-      if (!error && data.user) {
-        const authData: AuthData = {
-          userId: data.user.id,
-          email: data.user.email || email,
-          name: name,
-          accessToken: data.session?.access_token,
-          refreshToken: data.session?.refresh_token,
-          expiresAt: Date.now() + (7 * 24 * 60 * 60 * 1000) // 7天
-        }
-        await saveAuthData(authData)
-        setupAutoRefresh()
-        setIsAuthenticated(true)
+      if (error) {
+        console.error('Supabase注册错误:', error)
+        return { error }
       }
       
-      return { error }
-    } catch (error) {
+      // 如果注册成功，创建用户配置文件
+      if (data.user) {
+        try {
+          // 创建用户配置文件
+          const { error: profileError } = await supabase
+            .from('user_profiles')
+            .insert({
+              id: data.user.id,
+              username: name,
+              avatar_url: null
+            })
+          
+          if (profileError) {
+            console.error('创建用户配置文件失败:', profileError)
+            // 不阻止注册流程，只记录错误
+          }
+          
+          // 创建默认营养目标
+          const { error: goalError } = await supabase
+            .from('nutrition_goals')
+            .insert({
+              user_id: data.user.id,
+              daily_calories: 2000,
+              daily_protein: 150,
+              daily_carbs: 250,
+              daily_fat: 65,
+              daily_fiber: 25,
+              daily_sugar: 50,
+              daily_sodium: 2300
+            })
+          
+          if (goalError) {
+            console.error('创建营养目标失败:', goalError)
+            // 不阻止注册流程，只记录错误
+          }
+          
+        } catch (profileError) {
+          console.error('创建用户数据失败:', profileError)
+        }
+        
+        // 如果有会话，保存登录状态
+        if (data.session) {
+          const authData: AuthData = {
+            userId: data.user.id,
+            email: data.user.email || email,
+            name: name,
+            accessToken: data.session.access_token,
+            refreshToken: data.session.refresh_token,
+            expiresAt: Date.now() + (7 * 24 * 60 * 60 * 1000) // 7天
+          }
+          await saveAuthData(authData)
+          setupAutoRefresh()
+          setIsAuthenticated(true)
+        }
+      }
+      
+      return { error: null }
+    } catch (error: any) {
       console.error('注册失败:', error)
-      return { error }
+      return { error: { message: error.message || '注册过程中发生未知错误' } }
     }
   }
 
-  const signIn = async (email: string, password: string, rememberMe: boolean = true) => {
+  const signIn = async (email: string, password: string, rememberMe: boolean = false) => {
     try {
+      console.log('🔐 开始登录流程...')
+      console.log('📧 邮箱:', email)
+      console.log('🔧 Supabase状态:', supabase ? '已配置' : '未配置(本地模式)')
+      
       if (supabase === null) {
-        // 本地模式：验证预设的用户账户
-        const validUsers = [
-          { email: 'admin@example.com', password: '123456', name: '管理员' },
-          { email: 'user@example.com', password: 'password', name: '用户' },
-          { email: 'test@test.com', password: 'test123', name: '测试用户' }
+        console.log('⚠️ 当前运行在本地模式，使用预设账户验证')
+        console.log('💡 提示：要使用真实数据库，请配置Supabase环境变量')
+        
+        // 本地模式：验证预设账户
+        const localUsers = [
+          { email: 'admin@example.com', password: '123456', name: 'Admin User', id: 'admin-001' },
+          { email: 'user@example.com', password: 'password', name: 'Regular User', id: 'user-001' },
+          { email: 'test@test.com', password: 'test123', name: 'Test User', id: 'test-001' }
         ]
         
-        const validUser = validUsers.find(u => u.email === email && u.password === password)
+        console.log('🔍 在本地用户中查找匹配账户...')
+        const foundUser = localUsers.find(u => u.email === email && u.password === password)
         
-        if (!validUser) {
-          return { 
-            error: { 
-              message: '邮箱或密码错误，请检查后重试',
-              code: 'invalid_credentials'
-            } 
-          }
+        if (!foundUser) {
+          console.log('❌ 本地验证失败：邮箱或密码错误')
+          console.log('📝 可用的测试账户:')
+          localUsers.forEach(user => {
+            console.log(`   - ${user.email} / ${user.password}`)
+          })
+          return { error: { message: '邮箱或密码错误\n\n可用测试账户：\n• admin@example.com / 123456\n• user@example.com / password\n• test@test.com / test123' } }
         }
         
-        // 验证成功，创建用户会话
+        console.log('✅ 本地验证成功，用户:', foundUser.name)
+        
         const mockUser = {
-          id: 'local-user-' + validUser.email.replace('@', '-').replace('.', '-'),
-          email: validUser.email,
-          user_metadata: { name: validUser.name },
+          id: foundUser.id,
+          email: foundUser.email,
+          user_metadata: { name: foundUser.name },
           created_at: new Date().toISOString(),
           app_metadata: {},
           aud: 'authenticated'
         } as unknown as User
         
+        console.log('👤 设置用户状态...')
         setUser(mockUser)
         setIsAuthenticated(true)
+        console.log('🎉 登录状态已更新')
         
-        // 如果选择记住登录状态，保存到Cookie
+        // 保存登录状态
         if (rememberMe) {
+          console.log('💾 保存登录状态到本地存储...')
           const authData: AuthData = {
             userId: mockUser.id,
             email: mockUser.email,
-            name: validUser.name,
+            name: foundUser.name,
             expiresAt: Date.now() + (7 * 24 * 60 * 60 * 1000) // 7天
           }
           await saveAuthData(authData)
           setupAutoRefresh()
+          console.log('✅ 登录状态已保存')
         }
         
+        console.log('🚀 本地模式登录完成')
         return { error: null }
       }
 
+      // Supabase模式：真实登录验证
+      console.log('🌐 使用Supabase进行真实登录验证...')
       const { data, error } = await supabase.auth.signInWithPassword({
         email,
         password,
       })
       
-      // 如果登录成功且选择记住登录状态
-      if (!error && data.user && rememberMe) {
-        const authData: AuthData = {
-          userId: data.user.id,
-          email: data.user.email || email,
-          name: data.user.user_metadata?.name,
-          accessToken: data.session?.access_token,
-          refreshToken: data.session?.refresh_token,
-          expiresAt: Date.now() + (7 * 24 * 60 * 60 * 1000) // 7天
+      if (error) {
+        console.error('❌ Supabase登录错误:', error)
+        console.error('错误代码:', error.status)
+        console.error('错误消息:', error.message)
+        
+        // 返回更友好的错误信息
+        let errorMessage = '登录失败'
+        if (error.message.includes('Invalid login credentials')) {
+          errorMessage = '邮箱或密码错误'
+        } else if (error.message.includes('Email not confirmed')) {
+          errorMessage = '请先验证您的邮箱'
+        } else if (error.message.includes('Too many requests')) {
+          errorMessage = '登录尝试次数过多，请稍后再试'
+        } else {
+          errorMessage = error.message
         }
-        await saveAuthData(authData)
-        setupAutoRefresh()
+        return { error: { message: errorMessage } }
       }
       
-      if (!error) {
-        setIsAuthenticated(true)
+      console.log('✅ Supabase登录验证成功')
+      
+      if (data.user && data.session) {
+        try {
+          // 获取用户配置文件信息
+          const { data: profile, error: profileError } = await supabase
+            .from('user_profiles')
+            .select('username, avatar_url')
+            .eq('id', data.user.id)
+            .single()
+          
+          if (profileError && profileError.code !== 'PGRST116') {
+            console.error('获取用户配置文件失败:', profileError)
+          }
+          
+          // 更新用户元数据
+          const updatedUser = {
+            ...data.user,
+            user_metadata: {
+              ...data.user.user_metadata,
+              username: profile?.username || data.user.user_metadata?.name || '',
+              avatar_url: profile?.avatar_url || null
+            }
+          }
+          
+          setUser(updatedUser)
+          setSession(data.session)
+          setIsAuthenticated(true)
+          
+          // 保存登录状态
+          if (rememberMe) {
+            const authData: AuthData = {
+              userId: data.user.id,
+              email: data.user.email || email,
+              name: profile?.username || data.user.user_metadata?.name || '',
+              accessToken: data.session.access_token,
+              refreshToken: data.session.refresh_token,
+              expiresAt: Date.now() + (7 * 24 * 60 * 60 * 1000) // 7天
+            }
+            await saveAuthData(authData)
+            setupAutoRefresh()
+          }
+          
+        } catch (profileError) {
+          console.error('处理用户配置文件时出错:', profileError)
+          // 即使配置文件获取失败，也继续登录流程
+          setUser(data.user)
+          setSession(data.session)
+          setIsAuthenticated(true)
+        }
       }
       
-      return { error }
-    } catch (error) {
-      console.error('登录失败:', error)
-      return { error }
+      return { error: null }
+    } catch (error: any) {
+      console.error('💥 登录过程中发生异常错误:', error)
+      console.error('错误类型:', typeof error)
+      console.error('错误堆栈:', error.stack)
+      
+      let errorMessage = '登录过程中发生未知错误'
+      if (error.message) {
+        errorMessage = error.message
+      }
+      
+      console.error('🚨 最终错误信息:', errorMessage)
+      return { error: { message: errorMessage } }
     }
   }
 

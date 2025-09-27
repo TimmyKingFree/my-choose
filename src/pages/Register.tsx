@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Eye, EyeOff, Mail, Lock, User } from 'lucide-react';
+import { Eye, EyeOff, Mail, Lock, User, CheckCircle } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -60,15 +60,32 @@ const Register = () => {
       const { error } = await signUp(formData.email, formData.password, formData.username);
       
       if (error) {
-        setErrors({ general: error.message || '注册失败，请稍后重试' });
+        // 处理不同类型的错误
+        let errorMessage = '注册失败，请稍后重试';
+        
+        if (error.message?.includes('already registered')) {
+          errorMessage = '该邮箱已被注册，请使用其他邮箱或直接登录';
+        } else if (error.message?.includes('Password')) {
+          errorMessage = '密码不符合要求，请使用至少6位字符';
+        } else if (error.message?.includes('Email')) {
+          errorMessage = '邮箱格式不正确，请检查后重试';
+        } else if (error.message) {
+          errorMessage = error.message;
+        }
+        
+        setErrors({ general: errorMessage });
       } else {
         // 注册成功，跳转到登录页面
         navigate('/login', { 
-          state: { message: '注册成功！请检查您的邮箱并验证账户后登录。' }
+          state: { 
+            message: '注册成功！如果启用了邮箱验证，请检查您的邮箱并验证账户后登录。',
+            email: formData.email
+          }
         });
       }
-    } catch (error) {
-      setErrors({ general: '注册过程中发生错误，请稍后重试' });
+    } catch (error: any) {
+      console.error('注册错误:', error);
+      setErrors({ general: error?.message || '注册过程中发生错误，请稍后重试' });
     } finally {
       setIsLoading(false);
     }
